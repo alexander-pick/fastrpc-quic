@@ -692,42 +692,56 @@ static inline bool is_valid_local_handle(int domain, struct handle_info *hinfo) 
   return false;
 }
 
-static int verify_local_handle(int domain, remote_handle64 local) {
-  struct handle_info *hinfo = malloc(sizeof(struct handle_info));
-  hinfo->local = local;
+static int verify_local_handle(int domain, struct handle_info *hinfo) {
 
   int nErr = AEE_SUCCESS;
 
-  VERIFYC((local != (remote_handle64)-1) && hinfo, AEE_EINVHANDLE);
+  //VERIFYC((hinfo->local != (remote_handle64)-1) && hinfo, AEE_EINVHANDLE);
+  VERIFYC(hinfo->local == 0, AEE_EINVHANDLE);
   VERIFYC(is_valid_local_handle(domain, hinfo), AEE_EINVHANDLE);
   VERIFYC((hinfo->hlist >= &hlist[0]) &&
               (hinfo->hlist < &hlist[NUM_DOMAINS_EXTEND]),
           AEE_ERPC);
-  VERIFYC(QNode_IsQueuedZ(&hinfo->qn), AEE_EINVHANDLE);
+  //VERIFYC(QNode_IsQueuedZ(&hinfo->qn), AEE_EINVHANDLE);
 bail:
   if (nErr != AEE_SUCCESS) {
     FARF(RUNTIME_RPC_HIGH, "Error 0x%x: %s failed. handle 0x%" PRIx64 "\n",
-         nErr, __func__, local);
+         nErr, __func__, hinfo->local);
   }
   return nErr;
 }
 
 int get_domain_from_handle(remote_handle64 local, int *domain) {
-  struct handle_info *hinfo = (struct handle_info *)(uintptr_t)local;
-  int dom, nErr = AEE_SUCCESS;
+  
+  int dom = -1;
+  int nErr = AEE_SUCCESS;
 
-  VERIFY(AEE_SUCCESS == (nErr = verify_local_handle(-1, local)));
-  dom = (int)(hinfo->hlist - &hlist[0]);
-  VERIFYM((dom >= 0) && (dom < NUM_DOMAINS_EXTEND), AEE_EINVHANDLE,
-          "Error 0x%x: domain mapped to handle is out of range domain %d "
-          "handle 0x%" PRIx64 "\n",
-          nErr, dom, local);
+  struct handle_info *hinfo = {0};
+
+  VERIFYC(NULL != (hinfo = calloc(1, sizeof(struct handle_info))), AEE_ENOMEMORY);
+  hinfo->local = local;
+
+  for(int test_domain = 0; test_domain < NUM_DOMAINS_EXTEND; test_domain++) {  
+    if(AEE_SUCCESS == verify_local_handle(test_domain, hinfo)) {
+      hinfo->hlist = &hlist[test_domain];
+      dom = test_domain;
+      break;
+    }
+  }
+
+  VERIFYM(dom == -1, AEE_EINVHANDLE,
+          "Error 0x%x: local handle %x not found in global hlist\n",
+          nErr, local);
+  
   *domain = dom;
+
 bail:
   if (nErr != AEE_SUCCESS) {
     FARF(RUNTIME_RPC_HIGH, "Error 0x%x: %s failed. handle 0x%" PRIx64 "\n",
          nErr, __func__, local);
   }
+
+  free(hinfo);
   return nErr;
 }
 
@@ -807,16 +821,23 @@ bail:
   return (last == 0);
 }
 
-static int get_handle_remote(remote_handle64 local, remote_handle64 *remote) {
-  struct handle_info *hinfo = (struct handle_info *)(uintptr_t)local;
+static int get_handle_remote(remote_handle64 local, remote_handle64 *remote, int domain) {
   int nErr = AEE_SUCCESS;
 
-  VERIFY(AEE_SUCCESS == (nErr = verify_local_handle(-1, local)));
+  struct handle_info *hinfo = {0};
+
+  VERIFYC(NULL != (hinfo = calloc(1, sizeof(*hinfo))), AEE_ENOMEMORY);
+  hinfo->local = local;
+  hinfo->remote = *remote;
+  hinfo->hlist = &hlist[domain];
+
+  VERIFY(AEE_SUCCESS == (nErr = verify_local_handle(domain, hinfo)));
   *remote = hinfo->remote;
 bail:
   if (nErr != AEE_SUCCESS) {
     FARF(ERROR, "Error %x: get handle remote failed %p\n", nErr, &local);
   }
+  free(hinfo);
   return nErr;
 }
 
@@ -829,11 +850,10 @@ static int fastrpc_alloc_handle(int domain, QList *me, remote_handle64 remote,
   struct handle_info *hinfo = {0};
   int nErr = 0;
 
-  VERIFYC(NULL != (hinfo = calloc(1, sizeof(*hinfo))), AEE_ENOMEMORY);
-  hinfo->local = (remote_handle64)(uintptr_t)hinfo;
+  VERIFYC(NULL != (hinfo = calloc(1, sizeof(struct handle_info))), AEE_ENOMEMORY);
+  hinfo->local = *local;
   hinfo->remote = remote;
   hinfo->hlist = &hlist[domain];
-  *local = hinfo->local;
 
   QNode_CtorZ(&hinfo->qn);
   pthread_mutex_lock(&hlist[domain].lmut);
@@ -1445,7 +1465,7 @@ int remote_handle64_invoke(remote_handle64 local, uint32_t sc,
 
   VERIFY(AEE_SUCCESS == (nErr = get_domain_from_handle(local, &domain)));
   FASTRPC_GET_REF(domain);
-  VERIFY(AEE_SUCCESS == (nErr = get_handle_remote(local, &remote)));
+  VERIFY(AEE_SUCCESS == (nErr = get_handle_remote(local, &remote, domain)));
   VERIFY(AEE_SUCCESS ==
          (nErr = remote_handle_invoke_domain(domain, remote, NULL, sc, pra)));
 bail:
@@ -1517,7 +1537,7 @@ int remote_handle64_invoke_async(remote_handle64 local,
 
   VERIFY(AEE_SUCCESS == (nErr = get_domain_from_handle(local, &domain)));
   FASTRPC_GET_REF(domain);
-  VERIFY(AEE_SUCCESS == (nErr = get_handle_remote(local, &remote)));
+  VERIFY(AEE_SUCCESS == (nErr = get_handle_remote(local, &remote, domain)));
   VERIFY(AEE_SUCCESS ==
          (nErr = remote_handle_invoke_domain(domain, remote, desc, sc, pra)));
 bail:
@@ -1828,7 +1848,7 @@ int remote_handle64_close(remote_handle64 handle) {
                          handle);
   VERIFYC(handle != (remote_handle64)-1, AEE_EINVHANDLE);
   VERIFY(AEE_SUCCESS == (nErr = get_domain_from_handle(handle, &domain)));
-  VERIFY(AEE_SUCCESS == (nErr = get_handle_remote(handle, &remote)));
+  VERIFY(AEE_SUCCESS == (nErr = get_handle_remote(handle, &remote, domain)));
   set_thread_context(domain);
   if (remote) {
     VERIFY(AEE_SUCCESS ==

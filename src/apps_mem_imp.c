@@ -100,7 +100,7 @@ __QAIC_IMPL(apps_mem_request_map64)(int heapid, uint32 lflags, uint32 rflags,
   }
   (void)vin;
   VERIFYC(len >= 0, AEE_EBADPARM);
-  VERIFYC(NULL != (minfo = malloc(sizeof(*minfo))), AEE_ENOMEMORY);
+  VERIFYC(NULL != (minfo = malloc(sizeof(minfo))), AEE_ENOMEMORY);
   QNode_CtorZ(&minfo->qn);
   *vadsp = 0;
   if (rflags == ADSP_MMAP_HEAP_ADDR || rflags == ADSP_MMAP_REMOTE_HEAP_ADDR) {
@@ -262,7 +262,7 @@ __QAIC_IMPL(apps_mem_share_map)(int fd, int size, uint64 *vapps,
   int domain = get_current_domain();
 
   VERIFYC(fd > 0, AEE_EBADPARM);
-  VERIFYC(0 != (minfo = malloc(sizeof(*minfo))), AEE_ENOMEMORY);
+  VERIFYC(0 != (minfo = malloc(sizeof(minfo))), AEE_ENOMEMORY);
   QNode_CtorZ(&minfo->qn);
   *vadsp = 0;
   VERIFYC(MAP_FAILED != (buf = (void *)mmap(NULL, size, PROT_READ | PROT_WRITE,
